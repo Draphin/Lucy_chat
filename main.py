@@ -121,31 +121,38 @@ def delete_core_fact(fact_key):
     except Exception as e:
         return False
 
-def get_all_core_facts():
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT fact_key, fact_value FROM core_profile")
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        if not rows:
-            return "No profile traits parsed yet."
-        return "\n".join([f"- {key}: {val}" for key, val in rows])
-    except Exception as e:
-        return "Profile traits temporarily unavailable."
 def extract_and_learn_facts(text):
     text_lower = text.lower()
+    
+    # UPGRADED: Expanded keyword pattern matching arrays for vehicles, music, and bands
     patterns = [
-        ("my name is ", "User Name"), ("i live in ", "Current Location"),
-        ("my dog's name is ", "Dog's Name"), ("my cat's name is ", "Cat's Name"),
-        ("i love to eat ", "Favorite Food"), ("i love drinking ", "Favorite Beverage"),
-        ("i love ", "Hobby/Interest"), ("my favorite color is ", "Favorite Color"),
-        ("my birthday is ", "User Birthday"), ("my job is ", "Job Title"),
-        ("i work as a ", "Job Title"), ("i drive a ", "Car Model"),
-        ("my car is a ", "Car Model"), ("i code in ", "Coding Language"),
-        ("i program in ", "Coding Language")
+        ("my name is ", "User Name"), 
+        ("i live in ", "Current Location"),
+        ("my dog's name is ", "Dog's Name"), 
+        ("my cat's name is ", "Cat's Name"),
+        ("i love to eat ", "Favorite Food"), 
+        ("i love drinking ", "Favorite Beverage"),
+        ("i love ", "Hobby/Interest"), 
+        ("my favorite color is ", "Favorite Color"),
+        ("my birthday is ", "User Birthday"), 
+        ("my job is ", "Job Title"),
+        ("i work as a ", "Job Title"), 
+        
+        # Explicit vehicle pattern triggers
+        ("my car is a ", "Car Model"),
+        ("my car is an ", "Car Model"),
+        ("i drive a ", "Car Model"),
+        ("i drive an ", "Car Model"),
+        ("my vehicle is a ", "Car Model"),
+        
+        # Explicit music and band pattern triggers
+        ("my favorite band is ", "Favorite Band"),
+        ("my favorite music artist is ", "Favorite Band"),
+        ("my favorite group is ", "Favorite Band"),
+        ("my favorite singer is ", "Favorite Band"),
+        ("i love listening to ", "Favorite Band")
     ]
+    
     for pattern, descriptor in patterns:
         if pattern in text_lower:
             start_pos = text_lower.find(pattern) + len(pattern)
@@ -154,6 +161,7 @@ def extract_and_learn_facts(text):
                 save_core_fact(descriptor, extracted_fact)
                 return True
     return False
+
 
 # --- 3. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
