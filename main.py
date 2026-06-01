@@ -132,7 +132,7 @@ def extract_and_learn_facts(text):
 # --- 3. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
     try:
-        url = "https://openrouter.ai"
+        url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {LLAMA_API_KEY}",
             "Content-Type": "application/json",
@@ -140,12 +140,12 @@ def query_external_llama(messages):
             "X-Title": "Lucy Assistant"
         }
         data = {
-            "model": "meta-llama/llama-3-8b-instruct:free", 
+            "model": "openrouter/free", # Automatically targets high-speed active free tiers
             "messages": messages
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
         response_json = response.json()
-        return response_json['choices'][0]['message']['content'].strip()
+        return response_json['choices'][0]['message']['content'].strip() # Fixed dictionary nested choice path
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
