@@ -76,15 +76,22 @@ def save_message(user_id, username, role, content):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # Enforce clean string casting to prevent text contractions from breaking the database
+        safe_user_id = int(user_id)
+        safe_username = str(username)
+        safe_role = str(role)
+        safe_content = str(content)
+        
         cursor.execute(
-            "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s)", 
-            (user_id, username, role, content)
+            "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s);", 
+            (safe_user_id, safe_username, safe_role, safe_content)
         )
         conn.commit()
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Error writing conversation step to Cloud DB: {e}")
+        print(f"Error writing conversation step to Cloud DB: {e}", flush=True)
 
 def get_recent_memory(user_id, limit=30):
     try:
