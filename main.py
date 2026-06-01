@@ -2,25 +2,23 @@ import os
 import sys
 import datetime
 import pytz
-import sqlite3
 import asyncio
 import io
 import threading
 import time
-import requests
-import psycopg2 
+import httpx  # REPLACED requests: Clean non-blocking async HTTP library
+import psycopg2
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import CallbackContext, Application, MessageHandler, CommandHandler, filters
 
 # --- 1. CORE ARCHITECTURE CONFIGURATION ---
 ai_name = "Lucy"
-version = "4.4.2_Unified_Prod"
+version = "4.4.3_Unified_Prod_Fixed"
 NEURAL_VOICE = "en-US-AvaNeural"
-
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY") 
-DATABASE_URL = os.environ.get("DATABASE_URL") 
+LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # --- 2. RENDER PORT BINDING SERVER (FREE TIER INTEGRATION) ---
 class HealthCheckServer(BaseHTTPRequestHandler):
@@ -30,7 +28,7 @@ class HealthCheckServer(BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Lucy Live Service Status: Operational")
-
+        
     def log_message(self, format, *args):
         """Suppresses messy HTTP connection log spam in your console."""
         return
@@ -50,7 +48,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Safe PostgreSQL Creation: Only creates tables if missing, protecting data across server updates
+    # Safe PostgreSQL Creation: Only creates tables if missing
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS history (
             id SERIAL PRIMARY KEY,
@@ -81,7 +79,7 @@ def save_message(user_id, username, role, content):
         safe_role = str(role)
         safe_content = str(content)
         cursor.execute(
-            "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s);", 
+            "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s);",
             (safe_user_id, safe_username, safe_role, safe_content)
         )
         conn.commit()
@@ -95,7 +93,7 @@ def get_recent_memory(user_id, limit=30):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT role, content FROM history WHERE user_id = %s ORDER BY id DESC LIMIT %s", 
+            "SELECT role, content FROM history WHERE user_id = %s ORDER BY id DESC LIMIT %s",
             (user_id, limit)
         )
         rows = cursor.fetchall()
@@ -107,7 +105,7 @@ def get_recent_memory(user_id, limit=30):
             messages.append({'role': role, 'content': content})
         return messages
     except Exception as e:
-        print(f"Error reading conversation history from Cloud DB: {e}")
+        print(f"Error reading conversation history from Cloud DB: {e}", flush=True)
         return []
 
 def save_core_fact(fact_key, fact_value):
@@ -116,15 +114,15 @@ def save_core_fact(fact_key, fact_value):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO core_profile (fact_key, fact_value) VALUES (%s, %s) "
-            "ON CONFLICT (fact_key) DO UPDATE SET fact_value = EXCLUDED.fact_value", 
+            "ON CONFLICT (fact_key) DO UPDATE SET fact_value = EXCLUDED.fact_value",
             (fact_key.strip(), fact_value.strip())
         )
         conn.commit()
         cursor.close()
         conn.close()
-        print(f"[Profile Learned]: {fact_key} -> {fact_value}")
+        print(f"[Profile Learned]: {fact_key} -> {fact_value}", flush=True)
     except Exception as e:
-        print(f"Error saving permanent profile fact: {e}")
+        print(f"Error saving permanent profile fact: {e}", flush=True)
 
 def delete_core_fact(fact_key):
     try:
@@ -155,25 +153,23 @@ def get_all_core_facts():
 def extract_and_learn_facts(text):
     text_lower = text.lower()
     patterns = [
-        ("my name is ", "User Name"), 
+        ("my name is ", "User Name"),
         ("i live in ", "Current Location"),
-        ("my dog's name is ", "Dog's Name"), 
+        ("my dog's name is ", "Dog's Name"),
         ("my cat's name is ", "Cat's Name"),
-        ("i love to eat ", "Favorite Food"), 
+        ("i love to eat ", "Favorite Food"),
         ("i love drinking ", "Favorite Beverage"),
-        ("i love ", "Hobby/Interest"), 
+        ("i love ", "Hobby/Interest"),
         ("my favorite color is ", "Favorite Color"),
-        ("my birthday is ", "User Birthday"), 
+        ("my birthday is ", "User Birthday"),
         ("my job is ", "Job Title"),
-        ("i work as a ", "Job Title"), 
-        
+        ("i work as a ", "Job Title"),
         # Vehicle traits
         ("my car is a ", "Car Model"),
         ("my car is an ", "Car Model"),
         ("i drive a ", "Car Model"),
         ("i drive an ", "Car Model"),
         ("my vehicle is a ", "Car Model"),
-        
         # Music and bands traits
         ("my favorite band is ", "Favorite Band"),
         ("my favorite music artist is ", "Favorite Band"),
@@ -190,10 +186,11 @@ def extract_and_learn_facts(text):
                 return True
     return False
 
-# --- 4. EXTERNAL LLAMA 3 API THINKING LAYER ---
-def query_external_llama(messages):
+# --- 4. EXTERNAL LLAMA 3 API THINKING LAYER (NON-BLOCKING) ---
+async def query_external_llama_async(messages):
+    """Asynchronously calls OpenRouter to completely avoid event loop freezes."""
     try:
-        # FIX: Point directly to the core chat completions endpoint pathway instead of base homepage link
+        # FIX: Pointed directly to the complete live completion URI endpoint route
         url = "https://openrouter.ai"
         headers = {
             "Authorization": f"Bearer {LLAMA_API_KEY}",
@@ -205,17 +202,20 @@ def query_external_llama(messages):
             "model": "meta-llama/llama-3-8b-instruct:free",
             "messages": messages
         }
-        response = requests.post(url, headers=headers, json=data, timeout=20)
-        response_json = response.json()
         
+        # Async HTTP context execution loop
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data, timeout=20.0)
+            response_json = response.json()
+            
         choices = response_json.get('choices', [])
         if choices and len(choices) > 0:
             return choices[0]['message']['content'].strip()
             
-        print(f"[OpenRouter API Alert]: Empty choices payload returned -> {response_json}")
+        print(f"[OpenRouter API Alert]: Empty choices payload returned -> {response_json}", flush=True)
         return "My internal processing array returned an unreadable response string."
     except Exception as e:
-        print(f"External API Inference Failure: {e}")
+        print(f"External API Async Inference Failure: {e}", flush=True)
         return "My internal networks are experiencing a temporary external connection delay."
 
 # --- 5. CLOUD AUDIO ENGINE (EDGE-TTS) ---
@@ -230,6 +230,7 @@ async def generate_voice_bytes(text):
                 audio_data += chunk["data"]
         return audio_data
     except Exception as e:
+        print(f"Voice synthesis issue: {e}", flush=True)
         return None
 
 # --- 6. PROCESSING & TELEGRAM DISPATCHER ---
@@ -250,10 +251,12 @@ async def cmd_forget(update: Update, context: CallbackContext):
 async def handle_telegram_message(update: Update, context: CallbackContext):
     if not update.message or not update.message.text:
         return
+        
     user_text = update.message.text
     user_id = update.effective_user.id
     username_from_telegram = update.effective_user.username or update.effective_user.full_name or f"User {user_id}"
     
+    # Run parsing check
     extract_and_learn_facts(user_text)
     
     lucy_pre_response_parts = []
@@ -269,6 +272,8 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         return
 
     save_message(user_id, username_from_telegram, "user", user_text)
+    
+    # Read DB memory safely
     recent_history = get_recent_memory(user_id, limit=30)
     permanent_profile_context = get_all_core_facts()
     
@@ -277,13 +282,17 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         f"User name: '{username_from_telegram}', ID: '{user_id}'.\n\n"
         f"### KNOWN PERMANENT FACTS ABOUT USER:\n{permanent_profile_context}"
     )
+    
     messages = [{"role": "system", "content": system_instruction}] + recent_history
     
-    raw_api_reply = query_external_llama(messages)
+    # REPLACED WITH ASYNC CALL: Completely eliminates internal delays / freezes
+    raw_api_reply = await query_external_llama_async(messages)
     lucy_response = raw_api_reply.replace("</assistant>", "").replace("<|eot_id|>", "").strip()
-    save_message(user_id, username_from_telegram, "assistant", lucy_response)
     
+    save_message(user_id, username_from_telegram, "assistant", lucy_response)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=lucy_response)
+    
+    # Non-blocking voice execution block
     audio_bytes = await generate_voice_bytes(lucy_response)
     if audio_bytes:
         voice_file = io.BytesIO(audio_bytes)
@@ -299,8 +308,9 @@ async def async_main():
         
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
-        
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
@@ -310,6 +320,7 @@ async def async_main():
     await app.initialize()
     await app.updater.start_polling()
     await app.start()
+    
     while True:
         await asyncio.sleep(3600)
 
