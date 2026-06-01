@@ -31,25 +31,33 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # 1. Clean up old text table formats if they exist to prevent schema collisions
+    cursor.execute("DROP TABLE IF EXISTS history CASCADE;")
+    cursor.execute("DROP TABLE IF EXISTS core_profile CASCADE;")
+    
+    # 2. Re-build fresh, cloud-optimized table layouts using clean PostgreSQL notation
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS history (
+        CREATE TABLE history (
             id SERIAL PRIMARY KEY,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             user_id BIGINT,
             username TEXT,
             role TEXT,
             content TEXT
-        )
+        );
     ''')
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS core_profile (
+        CREATE TABLE core_profile (
             fact_key TEXT PRIMARY KEY,
             fact_value TEXT
-        )
+        );
     ''')
+    
     conn.commit()
     cursor.close()
     conn.close()
+    print("[Cloud Memory]: Database tables successfully reset and synchronized!", flush=True)
 
 def save_message(user_id, username, role, content):
     try:
