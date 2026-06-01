@@ -9,21 +9,40 @@ import threading
 import time
 import requests
 import psycopg2 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import CallbackContext, Application, MessageHandler, CommandHandler, filters
 
-from health_server import start_health_server
-
-# --- 1. CONFIGURATION ---
+# --- 1. CORE ARCHITECTURE CONFIGURATION ---
 ai_name = "Lucy"
-version = "4.4.0_Permanent_Cloud_Memory"
+version = "4.4.2_Unified_Prod"
 NEURAL_VOICE = "en-US-AvaNeural"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY") 
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 
-# --- 2. PERMANENT CLOUD MEMORY ENGINE ---
+# --- 2. RENDER PORT BINDING SERVER (FREE TIER INTEGRATION) ---
+class HealthCheckServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        """Responds to Render's automated pings to keep the free service alive."""
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Lucy Live Service Status: Operational")
+
+    def log_message(self, format, *args):
+        """Suppresses messy HTTP connection log spam in your console."""
+        return
+
+def start_health_server():
+    """Listens on the required port so Render doesn't force a shutdown."""
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
+    print(f"[Render Engine]: Web port binding established on port {port}", flush=True)
+    server.serve_forever()
+
+# --- 3. PERMANENT CLOUD MEMORY ENGINE (POSTGRESQL) ---
 def get_db_connection():
     """Establishes a secure connection to the permanent cloud cluster."""
     return psycopg2.connect(DATABASE_URL)
@@ -31,8 +50,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Safe PostgreSQL Creation: Only creates tables if they are missing, preserving data on reboots
+    # Safe PostgreSQL Creation: Only creates tables if missing, protecting data across server updates
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS history (
             id SERIAL PRIMARY KEY,
@@ -49,7 +67,6 @@ def init_db():
             fact_value TEXT
         );
     ''')
-    
     conn.commit()
     cursor.close()
     conn.close()
@@ -101,6 +118,7 @@ def save_core_fact(fact_key, fact_value):
         conn.commit()
         cursor.close()
         conn.close()
+        print(f"[Profile Learned]: {fact_key} -> {fact_value}")
     except Exception as e:
         print(f"Error saving permanent profile fact: {e}")
 
@@ -117,10 +135,21 @@ def delete_core_fact(fact_key):
     except Exception as e:
         return False
 
+def get_all_core_facts():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT fact_key, fact_value FROM core_profile")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not rows:
+            return "No profile traits parsed yet."
+        return "\n".join([f"- {key}: {val}" for key, val in rows])
+    except Exception as e:
+        return "Profile traits temporarily unavailable."
 def extract_and_learn_facts(text):
     text_lower = text.lower()
-    
-    # UPGRADED: Expanded keyword pattern matching arrays for vehicles, music, and bands
     patterns = [
         ("my name is ", "User Name"), 
         ("i live in ", "Current Location"),
@@ -134,21 +163,20 @@ def extract_and_learn_facts(text):
         ("my job is ", "Job Title"),
         ("i work as a ", "Job Title"), 
         
-        # Explicit vehicle pattern triggers
+        # Vehicle traits
         ("my car is a ", "Car Model"),
         ("my car is an ", "Car Model"),
         ("i drive a ", "Car Model"),
         ("i drive an ", "Car Model"),
         ("my vehicle is a ", "Car Model"),
         
-        # Explicit music and band pattern triggers
+        # Music and bands traits
         ("my favorite band is ", "Favorite Band"),
         ("my favorite music artist is ", "Favorite Band"),
         ("my favorite group is ", "Favorite Band"),
         ("my favorite singer is ", "Favorite Band"),
         ("i love listening to ", "Favorite Band")
     ]
-    
     for pattern, descriptor in patterns:
         if pattern in text_lower:
             start_pos = text_lower.find(pattern) + len(pattern)
@@ -158,11 +186,10 @@ def extract_and_learn_facts(text):
                 return True
     return False
 
-
-# --- 3. EXTERNAL LLAMA 3 API THINKING LAYER ---
+# --- 4. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
     try:
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = "https://openrouter.ai"
         headers = {
             "Authorization": f"Bearer {LLAMA_API_KEY}",
             "Content-Type": "application/json",
@@ -175,15 +202,12 @@ def query_external_llama(messages):
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
         response_json = response.json()
-        
-        # FIX: Added [0] index to cleanly parse the nested dictionary string from the API array
         return response_json['choices'][0]['message']['content'].strip()
-        
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
 
-# --- 4. CLOUD AUDIO ENGINE (EDGE-TTS) ---
+# --- 5. CLOUD AUDIO ENGINE (EDGE-TTS) ---
 async def generate_voice_bytes(text):
     try:
         import edge_tts
@@ -197,7 +221,7 @@ async def generate_voice_bytes(text):
     except Exception as e:
         return None
 
-# --- 5. PROCESSING & TELEGRAM DISPATCHER ---
+# --- 6. PROCESSING & TELEGRAM DISPATCHER ---
 async def cmd_profile(update: Update, context: CallbackContext):
     facts = get_all_core_facts()
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📋 *Lucy's Core Profile Memory Bank*:\n\n{facts}", parse_mode="Markdown")
@@ -246,12 +270,9 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
     messages = [{"role": "system", "content": system_instruction}] + recent_history
     
     raw_api_reply = query_external_llama(messages)
-    
-    # Clean up and strip raw model formatting wrappers leaked by the API
     lucy_response = raw_api_reply.replace("</assistant>", "").replace("<|eot_id|>", "").strip()
     
     save_message(user_id, username_from_telegram, "assistant", lucy_response)
-
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=lucy_response)
     audio_bytes = await generate_voice_bytes(lucy_response)
@@ -260,11 +281,11 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         voice_file.name = "lucy_voice.ogg"
         await context.bot.send_voice(chat_id=update.effective_chat.id, voice=voice_file)
 
-# --- 6. RUNNER PRODUCTION ENTRY ---
+# --- 7. RUNNER PRODUCTION ENTRY ---
 async def async_main():
     init_db()
     if not TELEGRAM_TOKEN or not LLAMA_API_KEY or not DATABASE_URL:
-        print("[CRITICAL ERROR]: Required environment cluster strings are missing!", flush=True)
+        print("[CRITICAL ERROR]: Required environment variables are missing!", flush=True)
         return
         
     web_thread = threading.Thread(target=start_health_server, daemon=True)
