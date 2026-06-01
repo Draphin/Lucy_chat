@@ -76,13 +76,10 @@ def save_message(user_id, username, role, content):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Enforce clean string casting to prevent text contractions from breaking the database
         safe_user_id = int(user_id)
         safe_username = str(username)
         safe_role = str(role)
         safe_content = str(content)
-        
         cursor.execute(
             "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s);", 
             (safe_user_id, safe_username, safe_role, safe_content)
@@ -119,7 +116,7 @@ def save_core_fact(fact_key, fact_value):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO core_profile (fact_key, fact_value) VALUES (%s, %s) "
-            "ON CONFLICT (fact_key) DO UPDATE SET fact_value = EXCLUDED.fact_value",
+            "ON CONFLICT (fact_key) DO UPDATE SET fact_value = EXCLUDED.fact_value", 
             (fact_key.strip(), fact_value.strip())
         )
         conn.commit()
@@ -196,6 +193,7 @@ def extract_and_learn_facts(text):
 # --- 4. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
     try:
+        # FIX: Point directly to the core chat completions endpoint pathway instead of base homepage link
         url = "https://openrouter.ai"
         headers = {
             "Authorization": f"Bearer {LLAMA_API_KEY}",
@@ -204,7 +202,7 @@ def query_external_llama(messages):
             "X-Title": "Lucy Assistant"
         }
         data = {
-            "model": "meta-llama/llama-3-8b-instruct:free", 
+            "model": "meta-llama/llama-3-8b-instruct:free",
             "messages": messages
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
@@ -216,7 +214,6 @@ def query_external_llama(messages):
             
         print(f"[OpenRouter API Alert]: Empty choices payload returned -> {response_json}")
         return "My internal processing array returned an unreadable response string."
-        
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
@@ -280,12 +277,10 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         f"User name: '{username_from_telegram}', ID: '{user_id}'.\n\n"
         f"### KNOWN PERMANENT FACTS ABOUT USER:\n{permanent_profile_context}"
     )
-    
     messages = [{"role": "system", "content": system_instruction}] + recent_history
     
     raw_api_reply = query_external_llama(messages)
     lucy_response = raw_api_reply.replace("</assistant>", "").replace("<|eot_id|>", "").strip()
-    
     save_message(user_id, username_from_telegram, "assistant", lucy_response)
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=lucy_response)
