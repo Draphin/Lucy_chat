@@ -204,12 +204,19 @@ def query_external_llama(messages):
             "X-Title": "Lucy Assistant"
         }
         data = {
-            "model": "openrouter/free", 
+            "model": "meta-llama/llama-3-8b-instruct:free", 
             "messages": messages
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
         response_json = response.json()
-        return response_json['choices'][0]['message']['content'].strip()
+        
+        choices = response_json.get('choices', [])
+        if choices and len(choices) > 0:
+            return choices[0]['message']['content'].strip()
+            
+        print(f"[OpenRouter API Alert]: Empty choices payload returned -> {response_json}")
+        return "My internal processing array returned an unreadable response string."
+        
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
