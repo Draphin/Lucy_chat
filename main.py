@@ -16,7 +16,7 @@ from health_server import start_health_server
 
 # --- 1. CONFIGURATION ---
 ai_name = "Lucy"
-version = "4.3.0_Free_Web_Service"
+version = "4.3.1_Free_Web_Service"
 NEURAL_VOICE = "en-US-AvaNeural"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -223,7 +223,8 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         await context.bot.send_voice(chat_id=update.effective_chat.id, voice=voice_file)
 
 # --- 6. RUNNER PRODUCTION ENTRY ---
-def main():
+async def async_main():
+    """Handles async application assembly for modern Python environments."""
     init_db()
     if not TELEGRAM_TOKEN or not LLAMA_API_KEY:
         print("[CRITICAL ERROR]: Required environment variables are missing!", flush=True)
@@ -239,7 +240,22 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
     
     print("Lucy Free Web Service active and listening...", flush=True)
-    app.run_polling()
+    
+    # Initialize and start polling cleanly inside the active loop
+    await app.initialize()
+    await app.updater.start_polling()
+    await app.start()
+    
+    # Keep the async application alive infinitely
+    while True:
+        await asyncio.sleep(3600)
+
+def main():
+    """Explicitly provisions a root event loop to support Python 3.14+ threads."""
+    try:
+        asyncio.run(async_main())
+    except KeyboardInterrupt:
+        print("Server execution halted cleanly.")
 
 if __name__ == "__main__":
     main()
