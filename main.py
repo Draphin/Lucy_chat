@@ -8,32 +8,34 @@ import io
 import threading
 import time
 import requests
+import psycopg2 
 from telegram import Update
 from telegram.ext import CallbackContext, Application, MessageHandler, CommandHandler, filters
 
-# Import the health server configuration from your other file
 from health_server import start_health_server
 
 # --- 1. CONFIGURATION ---
 ai_name = "Lucy"
-version = "4.3.1_Free_Web_Service"
+version = "4.4.0_Permanent_Cloud_Memory"
 NEURAL_VOICE = "en-US-AvaNeural"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY") 
+DATABASE_URL = os.environ.get("DATABASE_URL") 
 
-# Run database completely inside RAM cache to eliminate file system tracking bugs
-DB_PATH = ":memory:" 
+# --- 2. PERMANENT CLOUD MEMORY ENGINE ---
+def get_db_connection():
+    """Establishes a secure connection to the permanent cloud cluster."""
+    return psycopg2.connect(DATABASE_URL)
 
-# --- 2. MEMORY ENGINE (SQLITE) ---
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id BIGINT,
             username TEXT,
             role TEXT,
             content TEXT
@@ -46,50 +48,66 @@ def init_db():
         )
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 def save_message(user_id, username, role, content):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO history (user_id, username, role, content) VALUES (?, ?, ?, ?)", (user_id, username, role, content))
+        cursor.execute(
+            "INSERT INTO history (user_id, username, role, content) VALUES (%s, %s, %s, %s)", 
+            (user_id, username, role, content)
+        )
         conn.commit()
+        cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Error saving message: {e}")
+        print(f"Error writing conversation step to Cloud DB: {e}")
 
 def get_recent_memory(user_id, limit=30):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT role, content FROM history WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+        cursor.execute(
+            "SELECT role, content FROM history WHERE user_id = %s ORDER BY id DESC LIMIT %s", 
+            (user_id, limit)
+        )
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
+        
         messages = []
         for role, content in reversed(rows):
             messages.append({'role': role, 'content': content})
         return messages
     except Exception as e:
-        print(f"Error retrieving memory: {e}")
+        print(f"Error reading conversation history from Cloud DB: {e}")
         return []
 
 def save_core_fact(fact_key, fact_value):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO core_profile (fact_key, fact_value) VALUES (?, ?)", (fact_key.strip(), fact_value.strip()))
+        cursor.execute(
+            "INSERT INTO core_profile (fact_key, fact_value) VALUES (%s, %s) "
+            "ON CONFLICT (fact_key) DO UPDATE SET fact_value = EXCLUDED.fact_value",
+            (fact_key.strip(), fact_value.strip())
+        )
         conn.commit()
+        cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Error saving core fact to DB: {e}")
+        print(f"Error saving permanent profile fact: {e}")
 
 def delete_core_fact(fact_key):
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM core_profile WHERE LOWER(fact_key) = ?", (fact_key.lower().strip(),))
-        changes = conn.total_changes
+        cursor.execute("DELETE FROM core_profile WHERE LOWER(fact_key) = %s", (fact_key.lower().strip(),))
+        changes = cursor.rowcount
         conn.commit()
+        cursor.close()
         conn.close()
         return changes > 0
     except Exception as e:
@@ -97,17 +115,17 @@ def delete_core_fact(fact_key):
 
 def get_all_core_facts():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT fact_key, fact_value FROM core_profile")
         rows = cursor.fetchall()
+        cursor.close()
         conn.close()
         if not rows:
             return "No profile traits parsed yet."
         return "\n".join([f"- {key}: {val}" for key, val in rows])
     except Exception as e:
         return "Profile traits temporarily unavailable."
-
 def extract_and_learn_facts(text):
     text_lower = text.lower()
     patterns = [
@@ -132,7 +150,7 @@ def extract_and_learn_facts(text):
 # --- 3. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
     try:
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = "https://openrouter.ai"
         headers = {
             "Authorization": f"Bearer {LLAMA_API_KEY}",
             "Content-Type": "application/json",
@@ -140,12 +158,12 @@ def query_external_llama(messages):
             "X-Title": "Lucy Assistant"
         }
         data = {
-            "model": "openrouter/free", # Automatically targets high-speed active free tiers
+            "model": "openrouter/free", 
             "messages": messages
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
         response_json = response.json()
-        return response_json['choices'][0]['message']['content'].strip() # Fixed dictionary nested choice path
+        return response_json['choices'][0]['message']['content'].strip()
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
@@ -224,13 +242,11 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
 
 # --- 6. RUNNER PRODUCTION ENTRY ---
 async def async_main():
-    """Handles async application assembly for modern Python environments."""
     init_db()
-    if not TELEGRAM_TOKEN or not LLAMA_API_KEY:
-        print("[CRITICAL ERROR]: Required environment variables are missing!", flush=True)
+    if not TELEGRAM_TOKEN or not LLAMA_API_KEY or not DATABASE_URL:
+        print("[CRITICAL ERROR]: Required environment cluster strings are missing!", flush=True)
         return
         
-    # Start the web port server from health_server.py in a background thread
     web_thread = threading.Thread(target=start_health_server, daemon=True)
     web_thread.start()
         
@@ -239,19 +255,15 @@ async def async_main():
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
     
-    print("Lucy Free Web Service active and listening...", flush=True)
+    print("Lucy Secure Permanent Web Service node successfully initiated...", flush=True)
     
-    # Initialize and start polling cleanly inside the active loop
     await app.initialize()
     await app.updater.start_polling()
     await app.start()
-    
-    # Keep the async application alive infinitely
     while True:
         await asyncio.sleep(3600)
 
 def main():
-    """Explicitly provisions a root event loop to support Python 3.14+ threads."""
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
