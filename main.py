@@ -8,38 +8,24 @@ import io
 import threading
 import time
 import requests
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import CallbackContext, Application, MessageHandler, CommandHandler, filters
 
+# Import the health server configuration from your other file
+from health_server import start_health_server
+
 # --- 1. CONFIGURATION ---
 ai_name = "Lucy"
-version = "4.1.0_Render_Prod"
+version = "4.3.0_Free_Web_Service"
 NEURAL_VOICE = "en-US-AvaNeural"
 
-# Pull keys securely from Render Environment Dashboard variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 LLAMA_API_KEY = os.environ.get("LLAMA_API_KEY") 
 
-# FIX: Run database in-memory to prevent Render local filesystem write failures
+# Run database completely inside RAM cache to eliminate file system tracking bugs
 DB_PATH = ":memory:" 
 
-# --- 2. RENDER PORT BINDING HELPER ---
-class HealthCheckServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Lucy Live Service Status: Operational")
-
-def start_health_server():
-    """Satisfies Render's port requirement so the deployment doesn't time out."""
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
-    print(f"[Render Engine]: Port binding established on port {port}", flush=True)
-    server.serve_forever()
-
-# --- 3. MEMORY ENGINE (SQLITE) ---
+# --- 2. MEMORY ENGINE (SQLITE) ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -143,7 +129,7 @@ def extract_and_learn_facts(text):
                 return True
     return False
 
-# --- 4. EXTERNAL LLAMA 3 API THINKING LAYER ---
+# --- 3. EXTERNAL LLAMA 3 API THINKING LAYER ---
 def query_external_llama(messages):
     try:
         url = "https://openrouter.ai"
@@ -159,12 +145,12 @@ def query_external_llama(messages):
         }
         response = requests.post(url, headers=headers, json=data, timeout=20)
         response_json = response.json()
-        return response_json['choices']['message']['content'].strip()
+        return response_json['choices'][0]['message']['content'].strip()
     except Exception as e:
         print(f"External API Inference Failure: {e}")
         return "My internal networks are experiencing a temporary external connection delay."
 
-# --- 5. CLOUD AUDIO ENGINE (EDGE-TTS) ---
+# --- 4. CLOUD AUDIO ENGINE (EDGE-TTS) ---
 async def generate_voice_bytes(text):
     try:
         import edge_tts
@@ -178,7 +164,7 @@ async def generate_voice_bytes(text):
     except Exception as e:
         return None
 
-# --- 6. PROCESSING & TELEGRAM DISPATCHER ---
+# --- 5. PROCESSING & TELEGRAM DISPATCHER ---
 async def cmd_profile(update: Update, context: CallbackContext):
     facts = get_all_core_facts()
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"📋 *Lucy's Core Profile Memory Bank*:\n\n{facts}", parse_mode="Markdown")
@@ -236,23 +222,23 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
         voice_file.name = "lucy_voice.ogg"
         await context.bot.send_voice(chat_id=update.effective_chat.id, voice=voice_file)
 
-# --- 7. RUNNER PROD LOOP ---
+# --- 6. RUNNER PRODUCTION ENTRY ---
 def main():
     init_db()
     if not TELEGRAM_TOKEN or not LLAMA_API_KEY:
-        print("[CRITICAL ERROR]: Required environment config tokens are missing!", flush=True)
+        print("[CRITICAL ERROR]: Required environment variables are missing!", flush=True)
         return
-    
-    # Run network health server in a separate background thread to keep Render happy
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
+        
+    # Start the web port server from health_server.py in a background thread
+    web_thread = threading.Thread(target=start_health_server, daemon=True)
+    web_thread.start()
         
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_telegram_message))
     
-    print("Lucy is officially deployed live on Render production nodes...", flush=True)
+    print("Lucy Free Web Service active and listening...", flush=True)
     app.run_polling()
 
 if __name__ == "__main__":
