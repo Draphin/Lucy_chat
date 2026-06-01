@@ -55,7 +55,6 @@ def init_db():
     conn.close()
     print("[Cloud Memory]: Database tables verified and synchronized cleanly!", flush=True)
 
-
 def save_message(user_id, username, role, content):
     try:
         conn = get_db_connection()
