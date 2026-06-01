@@ -241,8 +241,13 @@ async def handle_telegram_message(update: Update, context: CallbackContext):
     
     messages = [{"role": "system", "content": system_instruction}] + recent_history
     
-    lucy_response = query_external_llama(messages)
+    raw_api_reply = query_external_llama(messages)
+    
+    # Clean up and strip raw model formatting wrappers leaked by the API
+    lucy_response = raw_api_reply.replace("</assistant>", "").replace("<|eot_id|>", "").strip()
+    
     save_message(user_id, username_from_telegram, "assistant", lucy_response)
+
     
     await context.bot.send_message(chat_id=update.effective_chat.id, text=lucy_response)
     audio_bytes = await generate_voice_bytes(lucy_response)
